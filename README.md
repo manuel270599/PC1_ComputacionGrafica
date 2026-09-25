@@ -1,0 +1,3 @@
+# 1° Práctica Calificada - Computación Gráfica 
+## Este proyecto presenta una solución basada en visión por computadora para la detección y conteo automatizado de personas que cruzan una zona delimitada por una línea vertical. 
+## Utilizando la biblioteca OpenCV en Python, el sistema procesa un video en tiempo real, aplica técnicas de sustracción de fondo para detectar movimiento, rastrea a los individuos mediante centroides y registra el sentido de su trayectoria (izquierda a derecha o viceversa). El sistema está diseñado para ser ligero, sin depender de hardware especializado (como GPU) y utilizando únicamente procesamiento de imágenes clásico.
