@@ -1,51 +1,101 @@
 import cv2
-import pickle
 import numpy as np
+import pickle
 
-estacionamientos = []
-with open('espacios.pkl', 'rb') as file:
-    estacionamientos = pickle.load(file)
+# 1. Cargar la posición de la línea vertical
+try:
+    with open('linea.pkl', 'rb') as file:
+        linea_x = pickle.load(file)
+except FileNotFoundError:
+    print("Error: Primero ejecuta configurar_linea.py para definir la línea.")
+    exit()
 
-video = cv2.VideoCapture('hola3.mov')
+# 2. Leer el video
+video = cv2.VideoCapture('video_personas.mov')
 
-# Obtiene las dimensiones del video
-ancho = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-alto = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+# 3. Crear el sustractor de fondo (MOG2 es ideal para detectar movimiento)
+# history: cuántos frames recuerda. varThreshold: sensibilidad al cambio.
+fgbg = cv2.createBackgroundSubtractorMOG2(history=100, varThreshold=40)
 
-print('Ancho: ', ancho)
-print('Alto: ', alto)
+# Diccionario para rastrear a las personas: {id: (cx, cy)}
+rastreador = {}
+id_actual = 0
 
-contador = 0
+# Contadores
+contador_izq_der = 0
+contador_der_izq = 0
 
 while True:
     check, img = video.read()
-    imgBN = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    imgTH = cv2.adaptiveThreshold(imgBN, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 16)
-    imgMedian = cv2.medianBlur(imgTH, 5)
-    kernel = np.ones((5,5), np.int8)
-    imgDil = cv2.dilate(imgMedian, kernel)
+    if not check:
+        break
 
-    cuadrados_verdes = 0  # Variable para contar los cuadrados verdes
+    # 4. Aplicar sustracción de fondo (detecta el movimiento)
+    imgMascara = fgbg.apply(img)
 
-    for x, y, w, h in estacionamientos:
-        espacio = imgDil[y:y+h, x:x+w]
-        count = cv2.countNonZero(espacio)
-        cv2.putText(img, str(count), (x,y+h-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
-        cv2.rectangle(img, (x,y), (x+w, y+h), (255,0,0), 2)
-        if count < 490:
-            cv2.rectangle(img, (x,y), (x+w, y+h), (0,255,0), 2)
-            cuadrados_verdes += 1  # Incrementa el contador de cuadrados verdes
+    # 5. Limpieza de ruido (Similar a tu código original: medianBlur y dilate)
+    imgMedian = cv2.medianBlur(imgMascara, 5)
+    kernel = np.ones((5, 5), np.uint8)
+    imgDil = cv2.dilate(imgMedian, kernel, iterations=2)
 
-    # Muestra el cuadro con el texto
-    cv2.putText(img, f'Espacios libres: {cuadrados_verdes}', (ancho - 200, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+    # 6. Encontrar contornos (las siluetas de las personas)
+    contornos, _ = cv2.findContours(imgDil, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    cv2.imshow('video', img)
-    # cv2.imshow('video TH', imgTH)
-    # cv2.imshow('video Median', imgMedian)
-    # cv2.imshow('video Dilatada', imgDil)
+    # 7. Dibujar la línea vertical
+    h, w = img.shape[:2]
+    cv2.line(img, (linea_x, 0), (linea_x, h), (0, 0, 255), 3)
+    cv2.putText(img, "ZONA DE CONTEO", (linea_x - 80, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-    key = cv2.waitKey(10)
-    if key == 27:  # Presionar la tecla Esc para salir del bucle
+    # 8. Procesar contornos y rastrear personas
+    nuevos_centros = []
+    for c in contornos:
+        area = cv2.contourArea(c)
+        # Filtrar por área para ignorar sombras o ruido pequeño
+        if area > 1500: 
+            x, y, w_rect, h_rect = cv2.boundingRect(c)
+            cx = x + w_rect // 2
+            cy = y + h_rect // 2
+            nuevos_centros.append((cx, cy))
+            
+            # Dibujar el rectángulo de la persona detectada
+            cv2.rectangle(img, (x, y), (x + w_rect, y + h_rect), (0, 255, 0), 2)
+
+    # 9. Lógica de rastreo simple (evitar contar a la misma persona varias veces)
+    # Emparejar centros nuevos con los del frame anterior
+    ids_actualizados = {}
+    for cx, cy in nuevos_centros:
+        match = False
+        for obj_id, (px, py) in rastreador.items():
+            # Si el centro está cerca del centro anterior, es la misma persona
+            if abs(cx - px) < 60 and abs(cy - py) < 60:
+                ids_actualizados[obj_id] = (cx, cy)
+                
+                # 10. Detectar cruce de línea
+                if px < linea_x and cx >= linea_x:
+                    contador_izq_der += 1
+                elif px > linea_x and cx <= linea_x:
+                    contador_der_izq += 1
+                
+                match = True
+                break
+        
+        # Si es una persona nueva, asignarle un ID
+        if not match:
+            ids_actualizados[id_actual] = (cx, cy)
+            id_actual += 1
+
+    rastreador = ids_actualizados
+
+    # 11. Mostrar la información en pantalla
+    cv2.putText(img, f"Izq a Der: {contador_izq_der}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+    cv2.putText(img, f"Der a Izq: {contador_der_izq}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+    cv2.putText(img, f"Total: {contador_izq_der + contador_der_izq}", (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+    cv2.imshow('Contador de Personas', img)
+    # cv2.imshow('Mascara de Movimiento', imgDil) # Descomenta si quieres ver la detección en crudo
+
+    # Presiona ESC para salir
+    if cv2.waitKey(30) == 27:
         break
 
 video.release()
